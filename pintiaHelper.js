@@ -30,7 +30,8 @@
         '.ln', '.lnBorder', '.ln-border', '.function_HJSmz', '.foldIcon_V3Ad2', 
         'button', '.cm-gutters', '.cm-panels', '.cm-announced', 
         '.language_E7263', '.languageName_cZYHa', '.toolbar_SkQeK',
-        '.pc-button', '.select-none.bd-left-1' // 额外新增的冗余按钮和分隔符
+        '.pc-button', '.select-none.bd-left-1', // 额外新增的冗余按钮和分隔符
+        '.action_ZO2qN', '.cm-panel' // 新增的按钮和面板容器
     ];
 
     const CONFIG = {
@@ -846,64 +847,131 @@
         const questions = document.querySelectorAll('div.pc-x[id]');
         if (questions.length === 0) return;
         addInfoLog(`[判断题] 开始处理 ${questions.length} 道题目`);
+        
         for (let i = 0; i < questions.length; i++) {
             if (!isRunning) return;
             const qBlock = questions[i];
-            const textElement = qBlock.querySelector('.rendered-markdown');
-            if (!textElement) continue;
+            
+            // 改进：更精准地克隆并清理题目区域，避免误删正文中的 flex 布局
+            const qClone = qBlock.cloneNode(true);
+            
+            // 针对 PTA 的判断题结构，选项通常在最后
+            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') || 
+                                qClone.querySelector('.flex.flex-wrap.mt-4') ||
+                                qClone.querySelector('.flex.flex-wrap');
+            if (optionsArea) optionsArea.remove();
+            
+            // 2. 剔除题目标题头 (如 R1-1, 分数, 作者, 单位)
+            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') || 
+                               qClone.querySelector('.flex.flex-wrap.gap-x-5') ||
+                               qClone.querySelector('.flex.flex-wrap.gap-2.grow');
+            if (headerInfo) headerInfo.remove();
 
-            // 使用清洗函数
-            const questionText = getCleanText(textElement);
-            const logItem = addLog(`${i + 1}. ${questionText}`);
+            const questionText = getCleanText(qClone);
+            
+            if (!questionText) {
+                addInfoLog(`[跳过] 第 ${i + 1} 题内容为空。`, false);
+                continue;
+            }
+
+            const logItem = addLog(`${i + 1}. ${questionText.substring(0, 40)}...`);
+            
             try {
                 if (!isRunning) return;
                 const result = await askAI(questionText, 'TF');
                 if (!isRunning) return;
+                
                 const answer = result.choice;
-                const labels = qBlock.querySelectorAll('label');
+                const labels = Array.from(qBlock.querySelectorAll('label'));
                 let targetLabel = null;
+                
                 for (const label of labels) {
-                    const labelText = label.innerText.trim();
-                    if (labelText === answer || (answer === 'T' && (labelText.includes('T') || labelText.includes('正确'))) || (answer === 'F' && (labelText.includes('F') || labelText.includes('错误')))) {
+                    const labelText = label.innerText.trim().toUpperCase();
+                    if (labelText === answer || 
+                       (answer === 'T' && (labelText.includes('T') || labelText.includes('正确'))) ||
+                       (answer === 'F' && (labelText.includes('F') || labelText.includes('错误')))) {
                         targetLabel = label;
                         break;
                     }
                 }
-                if (targetLabel) { targetLabel.click(); updateLog(logItem, result.full); }
-                else { updateLog(logItem, `未找到选项: ${answer}`, false); }
-            } catch (err) { updateLog(logItem, `错误: ${err}`, false); }
-            await new Promise(r => setTimeout(r, 500));
+                
+                if (targetLabel) {
+                    const input = targetLabel.querySelector('input');
+                    if (input) input.focus();
+                    targetLabel.click();
+                    updateLog(logItem, result.full);
+                } else {
+                    updateLog(logItem, `未找到选项: ${answer}`, false);
+                }
+            } catch (err) {
+                updateLog(logItem, `请求失败: ${err}`, false);
+            }
+            await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
         }
     }
 
-    // --- 新增：通用文本清洗函数 ---
+    // --- 优化通用文本清洗函数 ---
     function getCleanText(element) {
         if (!element) return "";
-        const clone = element.cloneNode(true);
+        const clone = element.nodeType ? element.cloneNode(true) : element;
         
-        // 1. 预处理：将所有的 CodeMirror 6 只读编辑器内容转为 Markdown 代码块
-        // 这是为了让 AI 能更清晰地识别出输入样例、输出样例以及菜单说明
-        clone.querySelectorAll('[data-code]').forEach(codeBlock => {
+        // 0. 预先移除干扰元素
+        TRASH_SELECTORS.forEach(s => {
+            clone.querySelectorAll(s).forEach(el => el.remove());
+        });
+
+        // 1. 处理图片
+        clone.querySelectorAll('img').forEach(img => {
+            if (img.alt) {
+                const span = document.createElement('span');
+                span.innerText = ` [图片: ${img.alt}] `;
+                img.parentNode.replaceChild(span, img);
+            }
+        });
+
+        // 2. 深度处理所有代码块 (增加对嵌套的防范)
+        const processedBlocks = new Set();
+        clone.querySelectorAll('[data-code], .codeEditor_CHvdZ, .cm-editor').forEach(codeBlock => {
+            if (processedBlocks.has(codeBlock)) return;
+            
             const cmContent = codeBlock.querySelector('.cm-content');
             if (cmContent) {
-                // 提取所有 cm-line 的内容并按行拼接，如果没找到则用 innerText 兜底
                 let lines = Array.from(cmContent.querySelectorAll('.cm-line'))
                                    .map(line => line.innerText)
                                    .join('\n');
                 if (!lines) lines = cmContent.innerText;
                 
-                const lang = codeBlock.getAttribute('data-lang') || '';
-                // 替换原节点内容为带 Markdown 标记的内容
-                codeBlock.innerHTML = `\n\`\`\`${lang}\n${lines}\n\`\`\`\n`;
+                const lang = codeBlock.getAttribute('data-lang') || "";
+                const pre = document.createElement('pre');
+                pre.innerText = `\n\`\`\`${lang}\n${lines}\n\`\`\`\n`;
+                
+                // 标记其子孙节点，防止重复处理
+                codeBlock.querySelectorAll('*').forEach(child => processedBlocks.add(child));
+                codeBlock.parentNode.replaceChild(pre, codeBlock);
+                processedBlocks.add(codeBlock);
             }
         });
 
-        // 2. 清除冗余元素
-        TRASH_SELECTORS.forEach(s => {
-            clone.querySelectorAll(s).forEach(el => el.remove());
+        // 3. 处理表格：增加换行和分隔符，方便 AI 理解
+        clone.querySelectorAll('table').forEach(table => {
+            let tableText = "\n[表格内容]\n";
+            table.querySelectorAll('tr').forEach(tr => {
+                const row = Array.from(tr.querySelectorAll('td, th'))
+                                .map(cell => cell.innerText.trim())
+                                .join(' | ');
+                tableText += "| " + row + " |\n";
+            });
+            const pre = document.createElement('pre');
+            pre.innerText = tableText + "[表格结束]\n";
+            table.parentNode.replaceChild(pre, table);
         });
+
+        // 4. 处理 KaTeX 公式
+        clone.querySelectorAll('.katex-html').forEach(el => el.remove());
         
-        return clone.innerText.trim();
+        return clone.innerText
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
     }
 
     async function solveMultipleChoice() {
@@ -914,18 +982,38 @@
             if (!isRunning) return;
             const qBlock = questions[i];
 
-            // 使用清洗函数提取题目文本
-            const questionElement = qBlock.querySelector('.rendered-markdown');
-            const questionText = getCleanText(questionElement);
+            // 改进：克隆并清理，保留代码、表格，剔除作者和选项
+            const qClone = qBlock.cloneNode(true);
+            
+            // 1. 剔除选项区域
+            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') || 
+                                qClone.querySelector('.flex.flex-wrap.mt-4') ||
+                                qClone.querySelector('.flex.flex-wrap');
+            if (optionsArea) optionsArea.remove();
 
-            // 提取所有选项
+            // 2. 剔除题目标题头 (如 R2-1, 分数, 作者, 单位)
+            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') || 
+                               qClone.querySelector('.flex.flex-wrap.gap-x-5');
+            if (headerInfo) headerInfo.remove();
+
+            const questionText = getCleanText(qClone);
+            if (!questionText) {
+                addInfoLog(`[跳过] 第 ${i + 1} 题提取文本为空。`, false);
+                continue;
+            }
+
+            // 3. 提取所有选项
             const labels = Array.from(qBlock.querySelectorAll('label'));
             let optionsPrompt = "\n选项：\n";
             labels.forEach(label => {
-                const indicator = label.querySelector('span')?.innerText.trim() || ""; // 如 "A."
-                // 对每个选项内容也进行清洗
-                const contentText = getCleanText(label.querySelector('.rendered-markdown')) ||
-                                   label.innerText.replace(indicator, "").trim();
+                // 找到选项标号 (如 A.)
+                const indicator = label.querySelector('span')?.innerText.trim() || "";
+                // 选项内容通过清洗函数提取，确保支持代码等复杂格式
+                const optionClone = label.cloneNode(true);
+                // 删掉标号，只留内容
+                const span = optionClone.querySelector('span');
+                if (span) span.remove();
+                const contentText = getCleanText(optionClone);
                 optionsPrompt += `${indicator} ${contentText}\n`;
             });
 
@@ -952,7 +1040,7 @@
                     updateLog(logItem, `未找到选项: ${answer}`, false);
                 }
             } catch (err) { updateLog(logItem, `错误: ${err}`, false); }
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
         }
     }
 
@@ -964,15 +1052,34 @@
             if (!isRunning) return;
             const qBlock = questions[i];
 
-            const questionElement = qBlock.querySelector('.rendered-markdown');
-            const questionText = getCleanText(questionElement);
+            // 改进：克隆并清理，保留代码、表格，剔除作者和选项
+            const qClone = qBlock.cloneNode(true);
+            
+            // 1. 剔除选项区域
+            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') || 
+                                qClone.querySelector('.flex.flex-wrap.mt-4') ||
+                                qClone.querySelector('.flex.flex-wrap');
+            if (optionsArea) optionsArea.remove();
+
+            // 2. 剔除题目标题头 (如 R2-1, 分数, 作者, 单位)
+            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') || 
+                               qClone.querySelector('.flex.flex-wrap.gap-x-5');
+            if (headerInfo) headerInfo.remove();
+
+            const questionText = getCleanText(qClone);
+            if (!questionText) {
+                addInfoLog(`[跳过] 第 ${i + 1} 题内容为空。`, false);
+                continue;
+            }
 
             const labels = Array.from(qBlock.querySelectorAll('label'));
             let optionsPrompt = "\n(多选题) 选项：\n";
             labels.forEach(label => {
                 const indicator = label.querySelector('span')?.innerText.trim() || "";
-                const contentText = getCleanText(label.querySelector('.rendered-markdown')) ||
-                                   label.innerText.replace(indicator, "").trim();
+                const optionClone = label.cloneNode(true);
+                const span = optionClone.querySelector('span');
+                if (span) span.remove();
+                const contentText = getCleanText(optionClone);
                 optionsPrompt += `${indicator} ${contentText}\n`;
             });
 
@@ -996,7 +1103,7 @@
                 }
                 updateLog(logItem, result.full);
             } catch (err) { updateLog(logItem, `错误: ${err}`, false); }
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
         }
     }
 
