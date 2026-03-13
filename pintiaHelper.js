@@ -24,6 +24,14 @@
     let solveCount = 0;
     const SERVER_URL = 'http://43.142.37.200:1145';
     const DONATE_IMAGE_URL = 'http://43.142.37.200/donate.png';
+    
+    // PTA 题目内容干扰元素选择器 (新增对新版 CodeMirror 6 编辑器的清理)
+    const TRASH_SELECTORS = [
+        '.ln', '.lnBorder', '.ln-border', '.function_HJSmz', '.foldIcon_V3Ad2', 
+        'button', '.cm-gutters', '.cm-panels', '.cm-announced', 
+        '.language_E7263', '.languageName_cZYHa', '.toolbar_SkQeK',
+        '.pc-button', '.select-none.bd-left-1' // 额外新增的冗余按钮和分隔符
+    ];
 
     const CONFIG = {
         get autoNext() { return GM_getValue('pta_auto_next', false); },
@@ -682,13 +690,59 @@
     }
 
     async function fillCodeEditor(code) {
-        const editor = document.querySelector('.cm-content');
-        if (!editor) return false;
+        // 尝试找到所有的编辑器内容区域，并优先选择可编辑的那个
+        const container = document.querySelector('[data-e2e="code-editor-input"]');
+        let editors = container ? 
+            Array.from(container.querySelectorAll('.cm-content[contenteditable="true"]')) :
+            Array.from(document.querySelectorAll('.cm-content[contenteditable="true"]'));
+
+        if (editors.length === 0) {
+            // 兜底：寻找普通的 cm-content (可能是只读或未标记 contenteditable)
+            const anyEditor = document.querySelector('.cm-content');
+            if (anyEditor) editors = [anyEditor];
+        }
+
+        if (editors.length === 0) return false;
+        
+        // 在 PTA 中，如果有多个编辑器（如函数题），通常最后一个是我们要填空的那个
+        const editor = editors[editors.length - 1];
+        
         editor.focus();
-        document.execCommand('selectAll', false, null);
-        document.execCommand('delete', false, null);
-        document.execCommand('insertText', false, code);
-        return true;
+        
+        // 针对 CodeMirror 6 的强力清空与填入逻辑
+        try {
+            // 1. 全选并删除
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+            await new Promise(r => setTimeout(r, 100));
+
+            // 2. 模拟粘贴 (这是对 CM6 最稳妥的非 API 交互方式)
+            const dataTransfer = new DataTransfer();
+            dataTransfer.setData('text/plain', code);
+            const pasteEvent = new ClipboardEvent('paste', {
+                clipboardData: dataTransfer,
+                bubbles: true,
+                cancelable: true
+            });
+            editor.dispatchEvent(pasteEvent);
+            
+            // 3. 检查填入结果，如果没内容则尝试 insertText
+            await new Promise(r => setTimeout(r, 200));
+            if (editor.innerText.trim().length < 5) {
+                document.execCommand('insertText', false, code);
+            }
+
+            // 4. 终极兜底：直接操作 DOM 并触发 input 事件，这能同步大部分 React 状态
+            if (editor.innerText.trim().length < 5) {
+                editor.innerText = code;
+                editor.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            
+            return true;
+        } catch (e) {
+            console.error("代码填充失败:", e);
+            return false;
+        }
     }
 
     // --- 7. 核心功能：跳转与保存 ---
@@ -826,11 +880,29 @@
     function getCleanText(element) {
         if (!element) return "";
         const clone = element.cloneNode(true);
-        // 移除行号、行号边框、功能按钮（放大/全屏/复制）、折叠图标
-        const trashSelectors = ['.ln', '.lnBorder', '.ln-border', '.function_HJSmz', '.foldIcon_V3Ad2', 'button'];
-        trashSelectors.forEach(s => {
+        
+        // 1. 预处理：将所有的 CodeMirror 6 只读编辑器内容转为 Markdown 代码块
+        // 这是为了让 AI 能更清晰地识别出输入样例、输出样例以及菜单说明
+        clone.querySelectorAll('[data-code]').forEach(codeBlock => {
+            const cmContent = codeBlock.querySelector('.cm-content');
+            if (cmContent) {
+                // 提取所有 cm-line 的内容并按行拼接，如果没找到则用 innerText 兜底
+                let lines = Array.from(cmContent.querySelectorAll('.cm-line'))
+                                   .map(line => line.innerText)
+                                   .join('\n');
+                if (!lines) lines = cmContent.innerText;
+                
+                const lang = codeBlock.getAttribute('data-lang') || '';
+                // 替换原节点内容为带 Markdown 标记的内容
+                codeBlock.innerHTML = `\n\`\`\`${lang}\n${lines}\n\`\`\`\n`;
+            }
+        });
+
+        // 2. 清除冗余元素
+        TRASH_SELECTORS.forEach(s => {
             clone.querySelectorAll(s).forEach(el => el.remove());
         });
+        
         return clone.innerText.trim();
     }
 
@@ -933,25 +1005,79 @@
         if (questions.length === 0) return;
         addInfoLog(`[${typeName}] 开始处理 ${questions.length} 道题目`);
 
-        const blankParentSelector = '[data-blank-index]';
-
         for (let i = 0; i < questions.length; i++) {
             if (!isRunning) return;
             const qBlock = questions[i];
-            const textElement = qBlock.querySelector('.rendered-markdown') || qBlock.querySelector('.generalProblemBody_WIhdN');
+            
+            // 兼容性：找寻填空题的真实内容区域，可能在 rendered-markdown 或 codeEditor 中
+            const textElement = qBlock.querySelector('.rendered-markdown') || qBlock.querySelector('.generalProblemBody_WIhdN') || qBlock;
             if (!textElement) continue;
 
             const clone = textElement.cloneNode(true);
-            const blanksInClone = clone.querySelectorAll(blankParentSelector);
+            
+            // 预处理：将所有的 CodeMirror 6 只读编辑器内容转为 Markdown 代码块 (针对程序填空)
+            clone.querySelectorAll('[data-code]').forEach(codeBlock => {
+                const cmContent = codeBlock.querySelector('.cm-content');
+                if (cmContent) {
+                    let lines = Array.from(cmContent.querySelectorAll('.cm-line'))
+                                       .map(line => line.innerText)
+                                       .join('\n');
+                    if (!lines) lines = cmContent.innerText;
+                    
+                    const lang = codeBlock.getAttribute('data-lang') || '';
+                    codeBlock.innerHTML = `\n\`\`\`${lang}\n${lines}\n\`\`\`\n`;
+                }
+            });
+            
+            // 兼容性：找到所有填空标记点。PTA 既有 [data-blank-index] 也有 CodeMirror 6 的 widget 形式
+            // 我们通过寻找包含 input/textarea 的最小包装容器来定位
+            const findBlanks = (root) => {
+                const blanks = [];
+                // 1. 寻找带有 data-blank-index 的容器
+                root.querySelectorAll('[data-blank-index]').forEach(el => blanks.push(el));
+                
+                // 2. 寻找 CodeMirror 6 内部的填空组件 (通常是 span[contenteditable="false"] 且包含 input)
+                root.querySelectorAll('.cm-content span[contenteditable="false"]').forEach(el => {
+                    if (el.querySelector('input, textarea') && !blanks.includes(el)) {
+                        blanks.push(el);
+                    }
+                });
+                
+                // 3. 兜底：寻找不在上述容器内但显然是填空项的 input (例如普通 markdown 里的 input)
+                root.querySelectorAll('input, textarea').forEach(input => {
+                    // 向上找，看有没有还没被记录的父容器
+                    let p = input.parentElement;
+                    while (p && p !== root) {
+                        if (blanks.includes(p)) return; // 已被记录
+                        if (p.classList.contains('inline-flex') || p.tagName === 'SPAN') {
+                             // 这是一个包装容器
+                             blanks.push(p);
+                             return;
+                        }
+                        p = p.parentElement;
+                    }
+                    if (!blanks.some(b => b.contains(input))) {
+                        blanks.push(input);
+                    }
+                });
+                return blanks;
+            };
+
+            const blanksInClone = findBlanks(clone);
             blanksInClone.forEach((b, idx) => {
-                const marker = document.createElement('span');
-                marker.innerText = ` [空${idx + 1}] `;
+                const marker = document.createTextNode(` [空${idx + 1}] `);
                 if (b.parentNode) {
                     b.parentNode.replaceChild(marker, b);
                 }
             });
+
+            // 清除干扰元素（如 gutters, toolbar 等）
+            TRASH_SELECTORS.forEach(s => {
+                clone.querySelectorAll(s).forEach(el => el.remove());
+            });
+
             const questionText = clone.innerText.trim();
-            const realBlanks = qBlock.querySelectorAll(blankParentSelector);
+            const realBlanks = findBlanks(qBlock);
 
             if (realBlanks.length === 0) continue;
 
@@ -969,7 +1095,8 @@
                 for (let j = 0; j < realBlanks.length; j++) {
                     if (aiAnswers[j]) {
                         const blankParent = realBlanks[j];
-                        const el = blankParent.querySelector('input, textarea');
+                        const el = blankParent.tagName === 'INPUT' || blankParent.tagName === 'TEXTAREA' ? 
+                                   blankParent : blankParent.querySelector('input, textarea');
                         if (el) {
                             const value = aiAnswers[j];
 
@@ -1012,19 +1139,47 @@
             // 切换语言
             await switchLanguage(targetLang);
 
-            const contentArea = document.querySelector('.rendered-markdown');
-            if (!contentArea) {
-                addInfoLog(`第 ${i + 1} 题内容加载失败，重试中...`);
-                await new Promise(r => setTimeout(r, 2000));
+            // 等待编辑器出现，增加重试机制
+            let editorExists = false;
+            for (let j = 0; j < 10; j++) {
+                if (document.querySelector('.cm-content')) {
+                    editorExists = true;
+                    break;
+                }
+                addInfoLog(`等待编辑器加载中 (${j + 1}/10)...`);
+                await new Promise(r => setTimeout(r, 1000));
             }
 
-            const title = document.querySelector('.text-darkest.font-bold.text-lg')?.innerText || `第 ${i+1} 题`;
+            if (!editorExists) {
+                addInfoLog(`[跳过] 无法加载编辑器，跳过此题。`, false);
+                updateLog(logItem, "编辑器未加载", false);
+                continue;
+            }
+
+            // 获取题目内容区域，考虑多重可能的选择器
+            const contentArea = document.querySelector('.rendered-markdown') || 
+                                document.querySelector('.generalProblemBody_WIhdN') ||
+                                document.querySelector('.problem-body') ||
+                                document.querySelector('.problemBody_S_NqD');
+
+            // 获取题目限制信息 (时间、内存等)
+            const infoList = document.querySelector('.problemInfo_HVczC');
+            const infoText = infoList ? infoList.innerText.replace(/\n+/g, ' ').trim() : '';
+
+            const title = document.querySelector('.text-darkest.font-bold.text-lg')?.innerText || 
+                          document.querySelector('.problem-title')?.innerText || 
+                          `第 ${i+1} 题`;
             const logItem = addLog(title);
 
             try {
                 if (!isRunning) return;
                 addInfoLog(`正在请求 AI 生成代码 (${targetLang})...`);
-                const result = await askAI(contentArea.innerText, type, targetLang);
+                
+                // 组合更完整的题目信息给 AI
+                const mainContent = getCleanText(contentArea || document.body);
+                const fullPrompt = `【题目标题】：${title}\n【限制信息】：${infoText}\n【题目正文】：\n${mainContent}`;
+                
+                const result = await askAI(fullPrompt, type, targetLang);
 
                 if (!isRunning) return;
                 addInfoLog(`AI 生成完毕，正在填入编辑器...`);
