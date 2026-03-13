@@ -31,7 +31,11 @@
         'button', '.cm-gutters', '.cm-panels', '.cm-announced', 
         '.language_E7263', '.languageName_cZYHa', '.toolbar_SkQeK',
         '.pc-button', '.select-none.bd-left-1', // 额外新增的冗余按钮和分隔符
-        '.action_ZO2qN', '.cm-panel' // 新增的按钮和面板容器
+        '.action_ZO2qN', '.cm-panel', // 新增的按钮和面板容器
+        // 清除分数标签和多余的小图标
+        '.pc-icon', '.select-none.bd-left-1',
+        'span[class*="rounded-r-sm"]', // PTA 新版分数标签外层
+        'span.select-none' // 分数文字容器
     ];
 
     const CONFIG = {
@@ -42,7 +46,9 @@
         get progLang() { return GM_getValue('pta_prog_lang', 'C'); },
         set progLang(v) { GM_setValue('pta_prog_lang', v); },
         get removeComments() { return GM_getValue('pta_remove_comments', true); },
-        set removeComments(v) { GM_setValue('pta_remove_comments', v); }
+        set removeComments(v) { GM_setValue('pta_remove_comments', v); },
+        get thinkingMode() { return GM_getValue('pta_thinking_mode', false); },
+        set thinkingMode(v) { GM_setValue('pta_thinking_mode', v); }
     };
 
     // 语言映射表
@@ -198,7 +204,7 @@
             background: #fcfcfc;
         }
         .log-item.info { border-left-color: #007bff; background: #f0f7ff; color: #0056b3; font-weight: 500; text-align: center; border-left: none; border-radius: 4px; }
-        .log-q { color: #555; font-weight: 600; margin-bottom: 2px; }
+        .log-q { color: #555; font-weight: 600; margin-bottom: 2px; white-space: pre-wrap; word-break: break-all; }
         .log-a { color: #28a745; white-space: pre-wrap; line-height: 1.4; }
         .log-err { color: #dc3545; }
         .log-status { color: #999; font-style: italic; font-size: 11px; }
@@ -257,6 +263,10 @@
                     <div class="setting-item checkbox-item">
                         <input type="checkbox" id="auto-next-input" ${CONFIG.autoNext ? 'checked' : ''}>
                         <label for="auto-next-input">完成后自动切换下一题型</label>
+                    </div>
+                    <div class="setting-item checkbox-item">
+                        <input type="checkbox" id="thinking-mode-input" ${CONFIG.thinkingMode ? 'checked' : ''}>
+                        <label for="thinking-mode-input" style="color: #007bff; font-weight: bold;">思考模式（提高正确率，降低速度）</label>
                     </div>
                     <div class="setting-item checkbox-item">
                         <input type="checkbox" id="remove-comments-input" ${CONFIG.removeComments ? 'checked' : ''}>
@@ -403,6 +413,7 @@
 
     // 实时保存逻辑
     document.getElementById('auto-next-input').onchange = (e) => CONFIG.autoNext = e.target.checked;
+    document.getElementById('thinking-mode-input').onchange = (e) => CONFIG.thinkingMode = e.target.checked;
     document.getElementById('remove-comments-input').onchange = (e) => CONFIG.removeComments = e.target.checked;
     document.getElementById('func-lang-select').onchange = (e) => CONFIG.funcLang = e.target.value;
     document.getElementById('prog-lang-select').onchange = (e) => CONFIG.progLang = e.target.value;
@@ -441,16 +452,24 @@
     async function askAI(question, type = 'TF', lang = 'C') {
         return new Promise((resolve, reject) => {
             let systemPrompt = "";
-            // ... (keep systemPrompt logic) ...
+            const isThinking = CONFIG.thinkingMode;
+
             if (type === 'TF') {
-                systemPrompt = "你是一个答题助手。请先对陈述进行简要分析，然后给出判断。\n回复格式：\n【思考】：[简要分析]\n【答案】：[T/F]";
+                systemPrompt = isThinking ? 
+                    "你是一个答题助手。请先对陈述进行简要分析，然后给出判断。\n回复格式：\n【思考】：[简要分析]\n【答案】：[T/F]" :
+                    "你是一个答题助手。请直接给出判断结果。\n回复格式：\n【答案】：[T/F]";
             } else if (type === 'MC') {
-                systemPrompt = "你是一个答题助手。请先分析各选项，然后选出正确答案。\n回复格式：\n【思考】：[简要分析]\n【答案】：[选项字母]";
+                systemPrompt = isThinking ?
+                    "你是一个答题助手。请先分析各选项，然后选出正确答案。\n回复格式：\n【思考】：[简要分析]\n【答案】：[选项字母]" :
+                    "你是一个答题助手。请直接给出正确选项标号字母。\n回复格式：\n【答案】：[选项字母]";
             } else if (type === 'MC_MORE') {
-                systemPrompt = "你是一个答题助手。请分析题目并选出所有正确答案。\n回复格式：\n【思考】：[简要分析]\n【答案】：[所有正确选项字母连写]";
+                systemPrompt = isThinking ?
+                    "你是一个答题助手。请分析题目并选出所有正确答案。\n回复格式：\n【思考】：[简要分析]\n【答案】：[所有正确选项字母连写]" :
+                    "你是一个答题助手。请直接给出所有正确选项标号字母。\n回复格式：\n【答案】：[所有正确选项字母连写]";
             } else if (type === 'FIB' || type === 'FIB_PROG') {
                 const isProg = type === 'FIB_PROG';
-                systemPrompt = `你是一个程序设计竞赛专家。请分析${isProg ? '程序逻辑' : '题目内容'}并完成填空。题目中用 [空n] 表示填空位置。
+                if (isThinking) {
+                    systemPrompt = `你是一个程序设计竞赛专家。请分析${isProg ? '程序逻辑' : '题目内容'}并完成填空。题目中用 [空n] 表示填空位置。
 
 你必须遵守以下回复格式：
 【思考】：[简要分析题目逻辑]
@@ -463,8 +482,17 @@
 1. 请务必为每一个出现的 [空n] 提供答案。
 2. 每一个答案必须包裹在 [空n] 和 [/空n] 标签中。
 3. 只输出上述要求的两个部分，不要有任何额外的文字。`;
+                } else {
+                    systemPrompt = `你是一个程序设计专家。请按格式提供填空答案。
+回复格式：
+【最终答案】：
+[空1] 第一个空的答案内容 [/空1]
+[空2] 第二个空的答案内容 [/空2]
+...依此类推。`;
+                }
             } else if (type === 'FUNC') {
-                systemPrompt = `你是一个程序设计竞赛专家。请根据题目描述写出缺失的函数实现代码。使用 ${lang} 语言。
+                if (isThinking) {
+                    systemPrompt = `你是一个程序设计竞赛专家。请根据题目描述写出缺失的函数实现代码。使用 ${lang} 语言。
 
 请在编写代码时严格遵守以下要求：
 1. **深度分析题目**：仔细阅读题目描述，识别出所有的特殊条件和约束。
@@ -473,8 +501,12 @@
 4. **通过注释思考**：请在代码内部编写详细的注释，解释你的算法思路、关键变量的含义以及如何处理特殊边界。这不仅有助于确保逻辑正确，也能展示你的思考过程。
 5. **严禁在代码外回复**：你的所有内容必须包含在代码块内，严禁在代码块外写任何文字、解释、提示或 Markdown 标记（除了包裹代码的 \`\`\`）。
 6. **纯净输出**：只输出代码块，不要有任何开场白或结束语。`;
+                } else {
+                    systemPrompt = `你是一个程序设计专家。请直接给出 ${lang} 语言的函数实现代码，严禁任何解释或 Markdown 标记（除了包裹代码的 \`\`\`）。`;
+                }
             } else if (type === 'PROG') {
-                systemPrompt = `你是一个程序设计竞赛专家。请根据要求写出完整的程序代码。使用 ${lang} 语言。
+                if (isThinking) {
+                    systemPrompt = `你是一个程序设计竞赛专家。请根据要求写出完整的程序代码。使用 ${lang} 语言。
 
 请在编写代码时严格遵守以下要求：
 1. **深度分析题目**：仔细阅读题目描述，识别出所有的特殊条件和约束。
@@ -483,6 +515,9 @@
 4. **通过注释思考**：请在代码内部编写详细的注释，解释你的算法思路、关键变量的含义以及如何处理特殊边界。这不仅有助于确保逻辑正确，也能展示你的思考过程。
 5. **严禁在代码外回复**：你的所有内容必须包含在代码块内，严禁在代码块外写任何文字、解释、提示或 Markdown 标记（除了包裹代码的 \`\`\`）。
 6. **纯净输出**：只输出代码块，不要有任何开场白或结束语。`;
+                } else {
+                    systemPrompt = `你是一个程序设计专家。请直接给出 ${lang} 语言的完整程序代码，严禁任何解释或 Markdown 标记（除了包裹代码的 \`\`\`）。`;
+                }
             }
 
             GM_xmlhttpRequest({
@@ -874,7 +909,7 @@
                 continue;
             }
 
-            const logItem = addLog(`${i + 1}. ${questionText.substring(0, 40)}...`);
+            const logItem = addLog(`${i + 1}. ${questionText}`);
             
             try {
                 if (!isRunning) return;
@@ -929,20 +964,26 @@
             }
         });
 
-        // 2. 深度处理所有代码块 (增加对嵌套的防范)
+        // 2. 深度处理所有代码块 (保证换行)
         const processedBlocks = new Set();
         clone.querySelectorAll('[data-code], .codeEditor_CHvdZ, .cm-editor').forEach(codeBlock => {
             if (processedBlocks.has(codeBlock)) return;
             
             const cmContent = codeBlock.querySelector('.cm-content');
             if (cmContent) {
+                // 修正：显式提取每一行并拼接换行符
                 let lines = Array.from(cmContent.querySelectorAll('.cm-line'))
                                    .map(line => line.innerText)
                                    .join('\n');
-                if (!lines) lines = cmContent.innerText;
+                
+                // 兜底：如果没找到 .cm-line (可能是旧版或非 CM 编辑器)
+                if (!lines) {
+                    lines = cmContent.innerText;
+                }
                 
                 const lang = codeBlock.getAttribute('data-lang') || "";
                 const pre = document.createElement('pre');
+                // 关键：在 pre 标签中设置文本，innerText 提取时会保留换行
                 pre.innerText = `\n\`\`\`${lang}\n${lines}\n\`\`\`\n`;
                 
                 // 标记其子孙节点，防止重复处理
@@ -1017,7 +1058,7 @@
                 optionsPrompt += `${indicator} ${contentText}\n`;
             });
 
-            const logItem = addLog(`${i + 1}. ${questionText.substring(0, 30)}...`);
+            const logItem = addLog(`${i + 1}. ${questionText}`);
             try {
                 if (!isRunning) return;
                 const result = await askAI(questionText + optionsPrompt, 'MC');
@@ -1083,7 +1124,7 @@
                 optionsPrompt += `${indicator} ${contentText}\n`;
             });
 
-            const logItem = addLog(`${i + 1}. ${questionText.substring(0, 30)}...`);
+            const logItem = addLog(`${i + 1}. ${questionText}`);
             try {
                 if (!isRunning) return;
                 const result = await askAI(questionText + optionsPrompt, 'MC_MORE');
@@ -1122,55 +1163,32 @@
 
             const clone = textElement.cloneNode(true);
             
-            // 预处理：将所有的 CodeMirror 6 只读编辑器内容转为 Markdown 代码块 (针对程序填空)
-            clone.querySelectorAll('[data-code]').forEach(codeBlock => {
-                const cmContent = codeBlock.querySelector('.cm-content');
-                if (cmContent) {
-                    let lines = Array.from(cmContent.querySelectorAll('.cm-line'))
-                                       .map(line => line.innerText)
-                                       .join('\n');
-                    if (!lines) lines = cmContent.innerText;
-                    
-                    const lang = codeBlock.getAttribute('data-lang') || '';
-                    codeBlock.innerHTML = `\n\`\`\`${lang}\n${lines}\n\`\`\`\n`;
-                }
-            });
+            // --- 关键修正：先进行标记替换，再进行代码转换 ---
             
-            // 兼容性：找到所有填空标记点。PTA 既有 [data-blank-index] 也有 CodeMirror 6 的 widget 形式
-            // 我们通过寻找包含 input/textarea 的最小包装容器来定位
-            const findBlanks = (root) => {
+            // 定义填空位置寻找逻辑 (兼容新旧版编辑器)
+            const findBlanksInternal = (root) => {
                 const blanks = [];
-                // 1. 寻找带有 data-blank-index 的容器
                 root.querySelectorAll('[data-blank-index]').forEach(el => blanks.push(el));
-                
-                // 2. 寻找 CodeMirror 6 内部的填空组件 (通常是 span[contenteditable="false"] 且包含 input)
                 root.querySelectorAll('.cm-content span[contenteditable="false"]').forEach(el => {
-                    if (el.querySelector('input, textarea') && !blanks.includes(el)) {
-                        blanks.push(el);
-                    }
+                    if (el.querySelector('input, textarea') && !blanks.includes(el)) blanks.push(el);
                 });
-                
-                // 3. 兜底：寻找不在上述容器内但显然是填空项的 input (例如普通 markdown 里的 input)
                 root.querySelectorAll('input, textarea').forEach(input => {
-                    // 向上找，看有没有还没被记录的父容器
                     let p = input.parentElement;
                     while (p && p !== root) {
-                        if (blanks.includes(p)) return; // 已被记录
-                        if (p.classList.contains('inline-flex') || p.tagName === 'SPAN') {
-                             // 这是一个包装容器
-                             blanks.push(p);
-                             return;
+                        if (blanks.includes(p)) return;
+                        if (p.classList.contains('inline-flex') || p.tagName === 'SPAN' || p.classList.contains('cm-widgetBuffer')) {
+                            blanks.push(p);
+                            return;
                         }
                         p = p.parentElement;
                     }
-                    if (!blanks.some(b => b.contains(input))) {
-                        blanks.push(input);
-                    }
+                    if (!blanks.some(b => b.contains(input))) blanks.push(input);
                 });
                 return blanks;
             };
 
-            const blanksInClone = findBlanks(clone);
+            // 1. 替换填空标记位
+            const blanksInClone = findBlanksInternal(clone);
             blanksInClone.forEach((b, idx) => {
                 const marker = document.createTextNode(` [空${idx + 1}] `);
                 if (b.parentNode) {
@@ -1178,17 +1196,34 @@
                 }
             });
 
-            // 清除干扰元素（如 gutters, toolbar 等）
+            // 2. 清理分数标签等干扰项 (现在分数标签应该作为标记的一部分被移除了，这里是二次加固)
             TRASH_SELECTORS.forEach(s => {
                 clone.querySelectorAll(s).forEach(el => el.remove());
             });
 
-            const questionText = clone.innerText.trim();
-            const realBlanks = findBlanks(qBlock);
+            // 3. 转换代码编辑器内容 (修正换行丢失)
+            clone.querySelectorAll('[data-code]').forEach(codeBlock => {
+                const cmContent = codeBlock.querySelector('.cm-content');
+                if (cmContent) {
+                    // 修正：显式提取每一行，保证 [空n] 标记也在正确行内并保留换行
+                    let content = Array.from(cmContent.querySelectorAll('.cm-line'))
+                                       .map(line => line.innerText)
+                                       .join('\n');
+                    if (!content) content = cmContent.innerText;
+                    
+                    const lang = codeBlock.getAttribute('data-lang') || '';
+                    // 使用 pre 标签包装，确保最终 innerText 包含换行
+                    const pre = document.createElement('pre');
+                    pre.innerText = `\n\`\`\`${lang}\n${content}\n\`\`\`\n`;
+                    codeBlock.parentNode.replaceChild(pre, codeBlock);
+                }
+            });
 
+            const questionText = clone.innerText.trim();
+            const realBlanks = findBlanksInternal(qBlock);
             if (realBlanks.length === 0) continue;
 
-            const logItem = addLog(`${i + 1}. ${questionText.substring(0, 50)}...`);
+            const logItem = addLog(`${i + 1}. ${questionText}`);
             try {
                 if (!isRunning) return;
                 const isProg = typeName.includes('程序');
