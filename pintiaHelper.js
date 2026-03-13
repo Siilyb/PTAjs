@@ -693,7 +693,10 @@
 
     // --- 7. 核心功能：跳转与保存 ---
     async function saveAndNext() {
-        const submitBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('提交本题作答'));
+        const submitBtn = Array.from(document.querySelectorAll('button')).find(b => 
+            b.innerText.includes('提交本题作答') || 
+            b.innerText.includes('Submit For This Problem')
+        );
         if (submitBtn) {
             addInfoLog("编程类题型当前页已处理。");
         } else {
@@ -1156,4 +1159,3 @@
 
     document.getElementById('start-btn').onclick = solveCurrentPage;
 })();
-
