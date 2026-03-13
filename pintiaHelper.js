@@ -930,7 +930,6 @@
         if (questions.length === 0) return;
         addInfoLog(`[${typeName}] 开始处理 ${questions.length} 道题目`);
 
-        const blankSelector = 'input, textarea';
         const blankParentSelector = '[data-blank-index]';
 
         for (let i = 0; i < questions.length; i++) {
@@ -967,7 +966,7 @@
                 for (let j = 0; j < realBlanks.length; j++) {
                     if (aiAnswers[j]) {
                         const blankParent = realBlanks[j];
-                        const el = blankParent.querySelector('input');
+                        const el = blankParent.querySelector('input, textarea');
                         if (el) {
                             const value = aiAnswers[j];
 
