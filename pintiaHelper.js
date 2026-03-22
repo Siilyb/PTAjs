@@ -4,16 +4,11 @@
 // @version      1.0
 // @description  自动识别题型，支持判断、单选、函数、编程题。可配置自动切换题型。支持PTA Pintia 程序题 自动答题 ai答题 程序设计类实验辅助教学平台 拼题A
 // @author       A Jun
-// @match        *://*.pintia.cn/problem-sets/*/exam/*
+// @match        *://*.pintia.cn/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @connect      43.142.37.200
-// @connect      ajunthinklab.top
-// @icon       	 http://43.142.37.200/icon.png
-// @downloadURL https://update.greasyfork.org/scripts/560207/PTA%20pintia%20%E5%AD%A6%E4%B9%A0%E5%8A%A9%E6%89%8B%20%28%E5%85%A8%E8%83%BD%E7%89%8810%29.user.js
-// @updateURL https://update.greasyfork.org/scripts/560207/PTA%20pintia%20%E5%AD%A6%E4%B9%A0%E5%8A%A9%E6%89%8B%20%28%E5%85%A8%E8%83%BD%E7%89%8810%29.meta.js
 // ==/UserScript==
 
 (function() {
@@ -22,13 +17,11 @@
     // --- 0. 配置管理 ---
     let isRunning = false;
     let solveCount = 0;
-    const SERVER_URL = 'http://43.142.37.200:1145';
-    const DONATE_IMAGE_URL = 'http://43.142.37.200/donate.png';
-    
+
     // PTA 题目内容干扰元素选择器 (新增对新版 CodeMirror 6 编辑器的清理)
     const TRASH_SELECTORS = [
-        '.ln', '.lnBorder', '.ln-border', '.function_HJSmz', '.foldIcon_V3Ad2', 
-        'button', '.cm-gutters', '.cm-panels', '.cm-announced', 
+        '.ln', '.lnBorder', '.ln-border', '.function_HJSmz', '.foldIcon_V3Ad2',
+        'button', '.cm-gutters', '.cm-panels', '.cm-announced',
         '.language_E7263', '.languageName_cZYHa', '.toolbar_SkQeK',
         '.pc-button', '.select-none.bd-left-1', // 额外新增的冗余按钮和分隔符
         '.action_ZO2qN', '.cm-panel', // 新增的按钮和面板容器
@@ -48,7 +41,13 @@
         get removeComments() { return GM_getValue('pta_remove_comments', true); },
         set removeComments(v) { GM_setValue('pta_remove_comments', v); },
         get thinkingMode() { return GM_getValue('pta_thinking_mode', false); },
-        set thinkingMode(v) { GM_setValue('pta_thinking_mode', v); }
+        set thinkingMode(v) { GM_setValue('pta_thinking_mode', v); },
+        get apiUrl() { return GM_getValue('pta_api_url', 'https://api.openai.com/v1/chat/completions'); },
+        set apiUrl(v) { GM_setValue('pta_api_url', v); },
+        get apiKey() { return GM_getValue('pta_api_key', ''); },
+        set apiKey(v) { GM_setValue('pta_api_key', v); },
+        get apiModel() { return GM_getValue('pta_api_model', 'gpt-3.5-turbo'); },
+        set apiModel(v) { GM_setValue('pta_api_model', v); }
     };
 
     // 语言映射表
@@ -107,12 +106,12 @@
             background: #fff;
             font-weight: bold;
         }
-        #donate-tab, #protocol-tab {
-            padding: 20px;
-            text-align: center;
+        #api-tab, #protocol-tab {
+            padding: 15px;
             font-size: 13px;
             color: #444;
             line-height: 1.6;
+            overflow-y: auto;
         }
         .protocol-text {
             text-align: left;
@@ -125,37 +124,39 @@
             overflow-y: auto;
             line-height: 1.8;
         }
-        .donate-img {
-            width: 200px;
-            height: 200px;
-            margin: 15px auto;
-            border: 1px solid #eee;
-            border-radius: 8px;
+        .api-input-group {
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        .api-input-group label {
             display: block;
+            margin-bottom: 6px;
+            font-weight: 500;
+            color: #333;
+        }
+        .api-input-group input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 13px;
+        }
+        .api-tips {
+            font-size: 11px;
+            color: #888;
+            margin-top: 15px;
+            background: #fdf6ec;
+            color: #e6a23c;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 3px solid #e6a23c;
         }
         .donate-text {
             color: #666;
             margin-top: 15px;
             text-align: left;
             padding: 0 10px;
-        }
-        .token-info {
-            font-size: 11px;
-            color: #888;
-            background: #f9f9f9;
-            padding: 6px 10px;
-            border-radius: 4px;
-            margin-top: 4px;
-            border: 1px dashed #eee;
-        }
-        .donate-link {
-            color: #007bff;
-            cursor: pointer;
-            text-decoration: underline;
-            margin-left: 5px;
-        }
-        .donate-link:hover {
-            color: #0056b3;
         }
         #pta-tab-content {
             flex: 1;
@@ -246,7 +247,7 @@
         <div id="pta-helper-tabs">
             <div class="pta-tab active" data-tab="home">主页</div>
             <div class="pta-tab" data-tab="settings">设置</div>
-            <div class="pta-tab" data-tab="donate">打赏</div>
+            <div class="pta-tab" data-tab="api">API设置</div>
             <div class="pta-tab" data-tab="protocol">协议</div>
         </div>
         <div id="pta-tab-content">
@@ -298,10 +299,33 @@
                     </div>
                 </div>
             </div>
-            <div id="donate-tab" class="tab-pane">
-                <img src="${DONATE_IMAGE_URL}" class="donate-img" alt="赞赏码">
-                <div class="donate-text">
-                    本项目为纯公益开发 ✨。若它对您有所帮助，欢迎赞赏支持。您的每一份心意都将用于服务器与 API 的维护，助力项目长久运行 🚀。感谢您的认可！( •̀ ω •́ )y
+            <div id="api-tab" class="tab-pane">
+                <div class="api-input-group">
+                    <label>API URL:</label>
+                    <input type="text" id="api-url-input" value="${CONFIG.apiUrl}" placeholder="https://api.openai.com/v1/chat/completions">
+                </div>
+                <div class="api-input-group">
+                    <label>API Key:</label>
+                    <input type="password" id="api-key-input" value="${CONFIG.apiKey}" placeholder="sk-...">
+                </div>
+                <div class="api-input-group">
+                    <label>模型 (Model):</label>
+                    <input type="text" id="api-model-input" value="${CONFIG.apiModel}" placeholder="gpt-4o">
+                </div>
+                <div class="api-tips">
+                    请填写支持 OpenAI 格式的 API 接口。<br>
+                    如果您使用中转 API，请确保填写的 URL 包含完整路径（通常以 /v1/chat/completions 结尾）。
+                </div>
+                <div style="margin-top: 15px; padding: 12px; background: #f0f9eb; border-radius: 8px; font-size: 12px; border: 1px solid #e1f3d8; color: #67c23a;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <strong>DeepSeek 配置范例：</strong>
+                        <button id="fill-deepseek-btn" style="font-size: 10px; padding: 2px 6px; background: #67c23a; color: #fff; border: none; border-radius: 4px; cursor: pointer;">一键填入</button>
+                    </div>
+                    <div style="margin-top: 5px; font-family: monospace; background: #fff; padding: 8px; border-radius: 4px; border: 1px solid #e1f3d8; line-height: 1.5;">
+                        API URL: https://api.deepseek.com/chat/completions<br>
+                        模型 (Model): deepseek-chat
+                    </div>
+                    <span style="font-size: 11px; color: #999; display: block; margin-top: 5px;">* deepseek-chat 速度快，deepseek-reasoner (R1) 逻辑更强。</span>
                 </div>
             </div>
             <div id="protocol-tab" class="tab-pane">
@@ -322,29 +346,6 @@
     const logContainer = document.getElementById('pta-helper-log');
     const startBtn = document.getElementById('start-btn');
     const stopBtn = document.getElementById('stop-btn');
-
-    // 解决 Mixed Content 问题：通过 GM_xmlhttpRequest 获取图片并转为 Base64
-    function loadDonateImage() {
-        const imgTag = document.querySelector('.donate-img');
-        if (!imgTag) return;
-
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: DONATE_IMAGE_URL,
-            responseType: "blob",
-            onload: function(response) {
-                const reader = new FileReader();
-                reader.onloadend = function() {
-                    imgTag.src = reader.result;
-                }
-                reader.readAsDataURL(response.response);
-            },
-            onerror: function(err) {
-                console.error("无法加载赞赏码图片:", err);
-            }
-        });
-    }
-    loadDonateImage();
 
     function addLog(question) {
         const div = document.createElement('div');
@@ -372,30 +373,6 @@
 
         if (success) {
             solveCount++;
-            // 每 4 题显示一次打赏信息
-            if (solveCount % 4 === 0) {
-                // 获取服务器统计数据以计算亏损
-                GM_xmlhttpRequest({
-                    method: "GET",
-                    url: `${SERVER_URL}/stats`,
-                    onload: function(response) {
-                        try {
-                            const stats = JSON.parse(response.responseText);
-                            const totalRequests = stats.totalRequests+2000 || 0;
-                            const loss = (totalRequests * 0.023 + 192).toFixed(2);
-
-                            const tokenInfo = document.createElement('div');
-                            tokenInfo.className = 'token-info';
-                            tokenInfo.innerHTML = `✅本项目已累计调用AI：${totalRequests}次，已亏损 ¥${loss} <br> 你的打赏对我很重要! <span class="donate-link">打赏入口</span>`;
-                            tokenInfo.querySelector('.donate-link').onclick = () => {
-                                document.querySelector('.pta-tab[data-tab="donate"]').click();
-                            };
-                            logItem.appendChild(tokenInfo);
-                            logContainer.scrollTop = logContainer.scrollHeight;
-                        } catch (e) {}
-                    }
-                });
-            }
         }
         logContainer.scrollTop = logContainer.scrollHeight;
     }
@@ -417,6 +394,25 @@
     document.getElementById('remove-comments-input').onchange = (e) => CONFIG.removeComments = e.target.checked;
     document.getElementById('func-lang-select').onchange = (e) => CONFIG.funcLang = e.target.value;
     document.getElementById('prog-lang-select').onchange = (e) => CONFIG.progLang = e.target.value;
+
+    // API 设置保存逻辑
+    document.getElementById('api-url-input').onchange = (e) => CONFIG.apiUrl = e.target.value;
+    document.getElementById('api-key-input').onchange = (e) => CONFIG.apiKey = e.target.value;
+    document.getElementById('api-model-input').onchange = (e) => CONFIG.apiModel = e.target.value;
+
+    // 一键填入 DeepSeek 范例
+    const fillDeepSeekBtn = document.getElementById('fill-deepseek-btn');
+    if (fillDeepSeekBtn) {
+        fillDeepSeekBtn.onclick = () => {
+            const urlInput = document.getElementById('api-url-input');
+            const modelInput = document.getElementById('api-model-input');
+            urlInput.value = 'https://api.deepseek.com/chat/completions';
+            modelInput.value = 'deepseek-chat';
+            CONFIG.apiUrl = urlInput.value;
+            CONFIG.apiModel = modelInput.value;
+            addInfoLog("已填入 DeepSeek 官方 API 配置。");
+        };
+    }
 
     document.getElementById('clear-btn').onclick = () => { logContainer.innerHTML = ''; };
 
@@ -451,11 +447,16 @@
 
     async function askAI(question, type = 'TF', lang = 'C') {
         return new Promise((resolve, reject) => {
+            if (!CONFIG.apiKey) {
+                reject('请先在 [API设置] 中配置 API Key');
+                return;
+            }
+
             let systemPrompt = "";
             const isThinking = CONFIG.thinkingMode;
 
             if (type === 'TF') {
-                systemPrompt = isThinking ? 
+                systemPrompt = isThinking ?
                     "你是一个答题助手。请先对陈述进行简要分析，然后给出判断。\n回复格式：\n【思考】：[简要分析]\n【答案】：[T/F]" :
                     "你是一个答题助手。请直接给出判断结果。\n回复格式：\n【答案】：[T/F]";
             } else if (type === 'MC') {
@@ -522,20 +523,24 @@
 
             GM_xmlhttpRequest({
                 method: "POST",
-                url: `${SERVER_URL}/solve`,
+                url: CONFIG.apiUrl,
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${CONFIG.apiKey}`
                 },
                 data: JSON.stringify({
-                    systemPrompt: systemPrompt,
-                    question: question,
-                    username: getUsername()
+                    model: CONFIG.apiModel,
+                    messages: [
+                        { role: "system", content: systemPrompt },
+                        { role: "user", content: question }
+                    ],
+                    temperature: 0.7
                 }),
                 onload: function(response) {
                     try {
                         const res = JSON.parse(response.responseText);
                         if (res.error) {
-                            reject(res.error);
+                            reject(res.error.message || JSON.stringify(res.error));
                             return;
                         }
                         const fullContent = res.choices[0].message.content.trim();
@@ -618,7 +623,7 @@
                         }
                     } catch (e) { reject('解析失败: ' + e.message); }
                 },
-                onerror: function(err) { reject('无法连接到服务器'); }
+                onerror: function(err) { reject('API 请求网络错误，请检查 API URL 是否正确。'); }
             });
         });
     }
@@ -728,7 +733,7 @@
     async function fillCodeEditor(code) {
         // 尝试找到所有的编辑器内容区域，并优先选择可编辑的那个
         const container = document.querySelector('[data-e2e="code-editor-input"]');
-        let editors = container ? 
+        let editors = container ?
             Array.from(container.querySelectorAll('.cm-content[contenteditable="true"]')) :
             Array.from(document.querySelectorAll('.cm-content[contenteditable="true"]'));
 
@@ -739,12 +744,12 @@
         }
 
         if (editors.length === 0) return false;
-        
+
         // 在 PTA 中，如果有多个编辑器（如函数题），通常最后一个是我们要填空的那个
         const editor = editors[editors.length - 1];
-        
+
         editor.focus();
-        
+
         // 针对 CodeMirror 6 的强力清空与填入逻辑
         try {
             // 1. 全选并删除
@@ -761,7 +766,7 @@
                 cancelable: true
             });
             editor.dispatchEvent(pasteEvent);
-            
+
             // 3. 检查填入结果，如果没内容则尝试 insertText
             await new Promise(r => setTimeout(r, 200));
             if (editor.innerText.trim().length < 5) {
@@ -773,7 +778,7 @@
                 editor.innerText = code;
                 editor.dispatchEvent(new Event('input', { bubbles: true }));
             }
-            
+
             return true;
         } catch (e) {
             console.error("代码填充失败:", e);
@@ -783,8 +788,8 @@
 
     // --- 7. 核心功能：跳转与保存 ---
     async function saveAndNext() {
-        const submitBtn = Array.from(document.querySelectorAll('button')).find(b => 
-            b.innerText.includes('提交本题作答') || 
+        const submitBtn = Array.from(document.querySelectorAll('button')).find(b =>
+            b.innerText.includes('提交本题作答') ||
             b.innerText.includes('Submit For This Problem')
         );
         if (submitBtn) {
@@ -882,54 +887,54 @@
         const questions = document.querySelectorAll('div.pc-x[id]');
         if (questions.length === 0) return;
         addInfoLog(`[判断题] 开始处理 ${questions.length} 道题目`);
-        
+
         for (let i = 0; i < questions.length; i++) {
             if (!isRunning) return;
             const qBlock = questions[i];
-            
+
             // 改进：更精准地克隆并清理题目区域，避免误删正文中的 flex 布局
             const qClone = qBlock.cloneNode(true);
-            
+
             // 针对 PTA 的判断题结构，选项通常在最后
-            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') || 
+            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') ||
                                 qClone.querySelector('.flex.flex-wrap.mt-4') ||
                                 qClone.querySelector('.flex.flex-wrap');
             if (optionsArea) optionsArea.remove();
-            
+
             // 2. 剔除题目标题头 (如 R1-1, 分数, 作者, 单位)
-            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') || 
+            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') ||
                                qClone.querySelector('.flex.flex-wrap.gap-x-5') ||
                                qClone.querySelector('.flex.flex-wrap.gap-2.grow');
             if (headerInfo) headerInfo.remove();
 
             const questionText = getCleanText(qClone);
-            
+
             if (!questionText) {
                 addInfoLog(`[跳过] 第 ${i + 1} 题内容为空。`, false);
                 continue;
             }
 
             const logItem = addLog(`${i + 1}. ${questionText}`);
-            
+
             try {
                 if (!isRunning) return;
                 const result = await askAI(questionText, 'TF');
                 if (!isRunning) return;
-                
+
                 const answer = result.choice;
                 const labels = Array.from(qBlock.querySelectorAll('label'));
                 let targetLabel = null;
-                
+
                 for (const label of labels) {
                     const labelText = label.innerText.trim().toUpperCase();
-                    if (labelText === answer || 
+                    if (labelText === answer ||
                        (answer === 'T' && (labelText.includes('T') || labelText.includes('正确'))) ||
                        (answer === 'F' && (labelText.includes('F') || labelText.includes('错误')))) {
                         targetLabel = label;
                         break;
                     }
                 }
-                
+
                 if (targetLabel) {
                     const input = targetLabel.querySelector('input');
                     if (input) input.focus();
@@ -949,7 +954,7 @@
     function getCleanText(element) {
         if (!element) return "";
         const clone = element.nodeType ? element.cloneNode(true) : element;
-        
+
         // 0. 预先移除干扰元素
         TRASH_SELECTORS.forEach(s => {
             clone.querySelectorAll(s).forEach(el => el.remove());
@@ -968,24 +973,24 @@
         const processedBlocks = new Set();
         clone.querySelectorAll('[data-code], .codeEditor_CHvdZ, .cm-editor').forEach(codeBlock => {
             if (processedBlocks.has(codeBlock)) return;
-            
+
             const cmContent = codeBlock.querySelector('.cm-content');
             if (cmContent) {
                 // 修正：显式提取每一行并拼接换行符
                 let lines = Array.from(cmContent.querySelectorAll('.cm-line'))
                                    .map(line => line.innerText)
                                    .join('\n');
-                
+
                 // 兜底：如果没找到 .cm-line (可能是旧版或非 CM 编辑器)
                 if (!lines) {
                     lines = cmContent.innerText;
                 }
-                
+
                 const lang = codeBlock.getAttribute('data-lang') || "";
                 const pre = document.createElement('pre');
                 // 关键：在 pre 标签中设置文本，innerText 提取时会保留换行
                 pre.innerText = `\n\`\`\`${lang}\n${lines}\n\`\`\`\n`;
-                
+
                 // 标记其子孙节点，防止重复处理
                 codeBlock.querySelectorAll('*').forEach(child => processedBlocks.add(child));
                 codeBlock.parentNode.replaceChild(pre, codeBlock);
@@ -1009,7 +1014,7 @@
 
         // 4. 处理 KaTeX 公式
         clone.querySelectorAll('.katex-html').forEach(el => el.remove());
-        
+
         return clone.innerText
             .replace(/\n{3,}/g, '\n\n')
             .trim();
@@ -1025,15 +1030,15 @@
 
             // 改进：克隆并清理，保留代码、表格，剔除作者和选项
             const qClone = qBlock.cloneNode(true);
-            
+
             // 1. 剔除选项区域
-            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') || 
+            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') ||
                                 qClone.querySelector('.flex.flex-wrap.mt-4') ||
                                 qClone.querySelector('.flex.flex-wrap');
             if (optionsArea) optionsArea.remove();
 
             // 2. 剔除题目标题头 (如 R2-1, 分数, 作者, 单位)
-            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') || 
+            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') ||
                                qClone.querySelector('.flex.flex-wrap.gap-x-5');
             if (headerInfo) headerInfo.remove();
 
@@ -1095,15 +1100,15 @@
 
             // 改进：克隆并清理，保留代码、表格，剔除作者和选项
             const qClone = qBlock.cloneNode(true);
-            
+
             // 1. 剔除选项区域
-            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') || 
+            const optionsArea = qClone.querySelector('span.flex.flex-wrap[class*="-m-0.5"]') ||
                                 qClone.querySelector('.flex.flex-wrap.mt-4') ||
                                 qClone.querySelector('.flex.flex-wrap');
             if (optionsArea) optionsArea.remove();
 
             // 2. 剔除题目标题头 (如 R2-1, 分数, 作者, 单位)
-            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') || 
+            const headerInfo = qClone.querySelector('.flex.flex-wrap.gap-2') ||
                                qClone.querySelector('.flex.flex-wrap.gap-x-5');
             if (headerInfo) headerInfo.remove();
 
@@ -1156,15 +1161,15 @@
         for (let i = 0; i < questions.length; i++) {
             if (!isRunning) return;
             const qBlock = questions[i];
-            
+
             // 兼容性：找寻填空题的真实内容区域，可能在 rendered-markdown 或 codeEditor 中
             const textElement = qBlock.querySelector('.rendered-markdown') || qBlock.querySelector('.generalProblemBody_WIhdN') || qBlock;
             if (!textElement) continue;
 
             const clone = textElement.cloneNode(true);
-            
+
             // --- 关键修正：先进行标记替换，再进行代码转换 ---
-            
+
             // 定义填空位置寻找逻辑 (兼容新旧版编辑器)
             const findBlanksInternal = (root) => {
                 const blanks = [];
@@ -1210,7 +1215,7 @@
                                        .map(line => line.innerText)
                                        .join('\n');
                     if (!content) content = cmContent.innerText;
-                    
+
                     const lang = codeBlock.getAttribute('data-lang') || '';
                     // 使用 pre 标签包装，确保最终 innerText 包含换行
                     const pre = document.createElement('pre');
@@ -1237,7 +1242,7 @@
                 for (let j = 0; j < realBlanks.length; j++) {
                     if (aiAnswers[j]) {
                         const blankParent = realBlanks[j];
-                        const el = blankParent.tagName === 'INPUT' || blankParent.tagName === 'TEXTAREA' ? 
+                        const el = blankParent.tagName === 'INPUT' || blankParent.tagName === 'TEXTAREA' ?
                                    blankParent : blankParent.querySelector('input, textarea');
                         if (el) {
                             const value = aiAnswers[j];
@@ -1299,7 +1304,7 @@
             }
 
             // 获取题目内容区域，考虑多重可能的选择器
-            const contentArea = document.querySelector('.rendered-markdown') || 
+            const contentArea = document.querySelector('.rendered-markdown') ||
                                 document.querySelector('.generalProblemBody_WIhdN') ||
                                 document.querySelector('.problem-body') ||
                                 document.querySelector('.problemBody_S_NqD');
@@ -1308,19 +1313,19 @@
             const infoList = document.querySelector('.problemInfo_HVczC');
             const infoText = infoList ? infoList.innerText.replace(/\n+/g, ' ').trim() : '';
 
-            const title = document.querySelector('.text-darkest.font-bold.text-lg')?.innerText || 
-                          document.querySelector('.problem-title')?.innerText || 
+            const title = document.querySelector('.text-darkest.font-bold.text-lg')?.innerText ||
+                          document.querySelector('.problem-title')?.innerText ||
                           `第 ${i+1} 题`;
             const logItem = addLog(title);
 
             try {
                 if (!isRunning) return;
                 addInfoLog(`正在请求 AI 生成代码 (${targetLang})...`);
-                
+
                 // 组合更完整的题目信息给 AI
                 const mainContent = getCleanText(contentArea || document.body);
                 const fullPrompt = `【题目标题】：${title}\n【限制信息】：${infoText}\n【题目正文】：\n${mainContent}`;
-                
+
                 const result = await askAI(fullPrompt, type, targetLang);
 
                 if (!isRunning) return;
